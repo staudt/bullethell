@@ -14,10 +14,18 @@ function resizeCanvas() {
     CONFIG.canvas.height = window.innerHeight;
     canvas.width = CONFIG.canvas.width;
     canvas.height = CONFIG.canvas.height;
+
+    // Reinitialize background when canvas size changes
+    if (typeof initBackground === 'function') {
+        initBackground();
+    }
 }
 
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
+
+// Initialize background system
+initBackground();
 
 // -----------------------------------------------------------------------------
 // GAME STATE
@@ -185,14 +193,19 @@ function fireMachineGun(dt) {
     if (player.machineGunCooldown <= 0) {
         player.machineGunCooldown = CONFIG.machineGun.fireRate;
 
+        // Consume charge when firing
+        if (!CONFIG.debug.infiniteCharge) {
+            player.charge = Math.max(0, player.charge - CONFIG.machineGun.chargeCost);
+        }
+
         // Random spread
         const angle = (Math.random() - 0.5) * CONFIG.machineGun.spread;
         const cos = Math.cos(angle);
         const sin = Math.sin(angle);
 
         spawnPlayerBullet(
-            player.x + player.width,
-            player.y + player.height / 2,
+            player.x + player.width / 2,
+            player.y,
             CONFIG.machineGun.bulletSpeed * cos,
             CONFIG.machineGun.bulletSpeed * sin,
             CONFIG.machineGun.damage,
@@ -213,8 +226,8 @@ function fireShotgun() {
         const sin = Math.sin(angle);
 
         spawnPlayerBullet(
-            player.x + player.width,
-            player.y + player.height / 2,
+            player.x + player.width / 2,
+            player.y,
             speed * cos,
             speed * sin,
             damage,
@@ -250,25 +263,71 @@ function spawnPlayerBullet(x, y, vx, vy, damage, type) {
 // ENEMIES
 // -----------------------------------------------------------------------------
 function spawnEnemy() {
-    const enemy = {
-        x: cameraX + CONFIG.canvas.width + 50,
-        y: Math.random() * (CONFIG.canvas.height - 60) + 30,
-        vx: -80 - Math.random() * 40,
-        vy: (Math.random() - 0.5) * 60,
-        width: 30,
-        height: 30,
-        health: 40,
-        maxHealth: 40,
-        mass: 1.0,  // Mass affects knockback resistance (higher = less knockback)
-        fireTimer: Math.random() * CONFIG.enemy.fireRate,
-        active: true,
-        type: 'drifter'
-    };
+    // Weighted random selection
+    const roll = Math.random();
+    const enemyType = roll < CONFIG.enemyTypes.gunship.spawnWeight ? 'gunship' : 'drifter';
+
+    let enemy;
+    if (enemyType === 'gunship') {
+        const config = CONFIG.enemyTypes.gunship;
+        enemy = {
+            x: cameraX + CONFIG.canvas.width + 50,
+            y: Math.random() * (CONFIG.canvas.height - config.height * 2) + config.height,
+            vx: config.vxMin - Math.random() * (config.vxMin - config.vxMax),
+            vy: (Math.random() - 0.5) * config.vySpread,
+            knockbackVx: 0,  // Separate knockback velocity
+            knockbackVy: 0,
+            width: config.width,
+            height: config.height,
+            health: config.health,
+            maxHealth: config.health,
+            mass: config.mass,
+            fireTimer: config.fireRateMin + Math.random() * (config.fireRateMax - config.fireRateMin),
+            burstCount: 0,
+            burstTimer: 0,
+            active: true,
+            type: 'gunship'
+        };
+    } else {
+        const config = CONFIG.enemyTypes.drifter;
+        enemy = {
+            x: cameraX + CONFIG.canvas.width + 50,
+            y: Math.random() * (CONFIG.canvas.height - config.height * 2) + config.height,
+            vx: config.vxMin - Math.random() * (config.vxMin - config.vxMax),
+            vy: (Math.random() - 0.5) * config.vySpread,
+            knockbackVx: 0,  // Separate knockback velocity
+            knockbackVy: 0,
+            width: config.width,
+            height: config.height,
+            health: config.health,
+            maxHealth: config.health,
+            mass: config.mass,
+            fireTimer: Math.random() * config.fireRate,
+            active: true,
+            type: 'drifter'
+        };
+    }
+
     enemies.push(enemy);
 }
 
 function updateEnemy(enemy, dt) {
     if (!enemy.active) return;
+
+    if (enemy.type === 'gunship') {
+        updateGunship(enemy, dt);
+    } else {
+        updateDrifter(enemy, dt);
+    }
+
+    // Remove if off screen left
+    if (enemy.x < cameraX - 100) {
+        enemy.active = false;
+    }
+}
+
+function updateDrifter(enemy, dt) {
+    const config = CONFIG.enemyTypes.drifter;
 
     // Move toward player (drift)
     const dx = player.x - enemy.x;
@@ -279,8 +338,15 @@ function updateEnemy(enemy, dt) {
         enemy.vy += (dy / dist) * 100 * dt;
     }
 
-    enemy.x += enemy.vx * dt;
-    enemy.y += enemy.vy * dt;
+    // Apply base velocity + knockback
+    enemy.x += (enemy.vx + enemy.knockbackVx) * dt;
+    enemy.y += (enemy.vy + enemy.knockbackVy) * dt;
+
+    // Decay knockback
+    enemy.knockbackVx *= 0.9;
+    enemy.knockbackVy *= 0.9;
+    if (Math.abs(enemy.knockbackVx) < 1) enemy.knockbackVx = 0;
+    if (Math.abs(enemy.knockbackVy) < 1) enemy.knockbackVy = 0;
 
     // Clamp Y
     enemy.y = Math.max(enemy.height / 2, Math.min(CONFIG.canvas.height - enemy.height / 2, enemy.y));
@@ -288,28 +354,83 @@ function updateEnemy(enemy, dt) {
     // Fire at player
     enemy.fireTimer -= dt;
     if (enemy.fireTimer <= 0) {
-        enemy.fireTimer = CONFIG.enemy.fireRate + Math.random() * 0.5;
+        enemy.fireTimer = config.fireRate + Math.random() * 0.5;
         fireEnemyBullet(enemy);
     }
+}
 
-    // Remove if off screen left
-    if (enemy.x < cameraX - 100) {
-        enemy.active = false;
+function updateGunship(enemy, dt) {
+    const config = CONFIG.enemyTypes.gunship;
+
+    // Apply base velocity + knockback
+    enemy.x += (enemy.vx + enemy.knockbackVx) * dt;
+    enemy.y += (enemy.vy + enemy.knockbackVy) * dt;
+
+    // Decay knockback (slower decay due to higher mass)
+    enemy.knockbackVx *= 0.88;
+    enemy.knockbackVy *= 0.88;
+    if (Math.abs(enemy.knockbackVx) < 1) enemy.knockbackVx = 0;
+    if (Math.abs(enemy.knockbackVy) < 1) enemy.knockbackVy = 0;
+
+    // Dampen vertical velocity
+    enemy.vy *= 0.95;
+
+    // Clamp Y
+    enemy.y = Math.max(enemy.height / 2, Math.min(CONFIG.canvas.height - enemy.height / 2, enemy.y));
+
+    // Burst fire behavior
+    if (enemy.burstCount > 0) {
+        enemy.burstTimer -= dt;
+        if (enemy.burstTimer <= 0) {
+            enemy.burstTimer = config.burstFireRate;
+            fireGunshipBurst(enemy);
+            enemy.burstCount--;
+        }
+    } else {
+        // Wait between bursts
+        enemy.fireTimer -= dt;
+        if (enemy.fireTimer <= 0) {
+            enemy.fireTimer = config.fireRateMin + Math.random() * (config.fireRateMax - config.fireRateMin);
+            enemy.burstCount = config.burstBulletsMin + Math.floor(Math.random() * (config.burstBulletsMax - config.burstBulletsMin + 1));
+            enemy.burstTimer = 0;
+        }
     }
 }
 
 function fireEnemyBullet(enemy) {
+    const config = CONFIG.enemyTypes.drifter;
     const angle = Math.atan2(player.y - enemy.y, player.x - enemy.x);
     const spread = (Math.random() - 0.5) * 0.3;
 
     enemyBullets.push({
         x: enemy.x,
         y: enemy.y,
-        vx: Math.cos(angle + spread) * CONFIG.enemy.bulletSpeed,
-        vy: Math.sin(angle + spread) * CONFIG.enemy.bulletSpeed,
+        vx: Math.cos(angle + spread) * config.bulletSpeed,
+        vy: Math.sin(angle + spread) * config.bulletSpeed,
         width: 10,
         height: 10,
-        damage: 15,
+        damage: config.bulletDamage,
+        active: true
+    });
+}
+
+function fireGunshipBurst(enemy) {
+    const config = CONFIG.enemyTypes.gunship;
+    // Fire in a semi-circular pattern toward the player
+    const angleToPlayer = Math.atan2(player.y - enemy.y, player.x - enemy.x);
+
+    // Random spread within semi-circle
+    const spreadAngle = (Math.random() - 0.5) * config.spreadAngle;
+    const finalAngle = angleToPlayer + spreadAngle;
+
+    enemyBullets.push({
+        x: enemy.x - enemy.width / 2,  // Fire from front of ship
+        y: enemy.y,
+        vx: Math.cos(finalAngle) * config.bulletSpeed,
+        vy: Math.sin(finalAngle) * config.bulletSpeed,
+        width: 8,
+        height: 8,
+        damage: config.bulletDamage,
         active: true
     });
 }
@@ -332,12 +453,14 @@ function damageEnemy(enemy, damage, type) {
 
     // Scale knockback by damage dealt and inverse of mass
     const knockbackMultiplier = (damage / 10) / enemy.mass;
-    enemy.vx += knockbackForce * knockbackMultiplier;
+
+    // Apply to knockback velocity instead of base velocity
+    enemy.knockbackVx += knockbackForce * knockbackMultiplier;
 
     // Add slight vertical knockback away from player
     const dy = enemy.y - player.y;
     if (dy !== 0) {
-        enemy.vy += (dy > 0 ? 1 : -1) * knockbackForce * knockbackMultiplier * 0.3;
+        enemy.knockbackVy += (dy > 0 ? 1 : -1) * knockbackForce * knockbackMultiplier * 0.3;
     }
 
     // Spawn hit particles
@@ -512,7 +635,7 @@ function boxCollision(a, b) {
 // Get player hitbox (expands when shield is active)
 function getPlayerHitbox() {
     const shieldPercent = player.shield / CONFIG.health.shieldMax;
-    const shieldPadding = shieldPercent > 0 ? (2 + shieldPercent * 4) : 0;
+    const shieldPadding = shieldPercent > 0 ? (4 + shieldPercent * 6) : 0;
 
     return {
         x: player.x - player.width / 2 - shieldPadding,
@@ -612,6 +735,7 @@ function update(dt) {
 
     updateParticles(dt);
     updateScreenShake();
+    updateBackground(dt, CONFIG.camera.scrollSpeed);
 }
 
 function updatePlayer(dt) {
@@ -808,12 +932,12 @@ function render() {
     ctx.fillStyle = '#111';
     ctx.fillRect(0, 0, CONFIG.canvas.width, CONFIG.canvas.height);
 
+    // Background (parallax layers - rendered in screen space, not world space)
+    renderBackground(ctx, cameraX);
+
     // World offset
     ctx.save();
     ctx.translate(-cameraX, 0);
-
-    // Background grid (for depth feel)
-    renderBackground();
 
     // Enemies
     for (const enemy of enemies) {
@@ -846,27 +970,7 @@ function render() {
     ctx.restore();
 }
 
-function renderBackground() {
-    ctx.strokeStyle = '#222';
-    ctx.lineWidth = 1;
-
-    const gridSize = 80;
-    const startX = Math.floor(cameraX / gridSize) * gridSize;
-
-    for (let x = startX; x < cameraX + CONFIG.canvas.width + gridSize; x += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, CONFIG.canvas.height);
-        ctx.stroke();
-    }
-
-    for (let y = 0; y < CONFIG.canvas.height; y += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(cameraX, y);
-        ctx.lineTo(cameraX + CONFIG.canvas.width, y);
-        ctx.stroke();
-    }
-}
+// Background rendering is now handled by background.js parallax system
 
 function renderPlayer() {
     const px = player.x;
@@ -908,32 +1012,26 @@ function renderPlayer() {
     ctx.fillStyle = shipColor;
     ctx.fillRect(px - player.width / 2, py - player.height / 2, player.width, player.height);
 
-    // Shield visual (blue border around ship)
+    // Shield visual (blue circle around ship)
     const shieldPercent = player.shield / CONFIG.health.shieldMax;
     if (shieldPercent > 0) {
-        const shieldPadding = 2 + shieldPercent * 4;  // 2-6px padding
+        const shieldRadius = (player.width / 2) + 4 + shieldPercent * 6;  // Base radius + padding
         const shieldAlpha = 0.3 + shieldPercent * 0.5;  // 0.3-0.8 alpha
         const shieldWidth = 1 + shieldPercent * 3;  // 1-4px line width
 
         ctx.strokeStyle = `rgba(68, 136, 255, ${shieldAlpha})`;
         ctx.lineWidth = shieldWidth;
-        ctx.strokeRect(
-            px - player.width / 2 - shieldPadding,
-            py - player.height / 2 - shieldPadding,
-            player.width + shieldPadding * 2,
-            player.height + shieldPadding * 2
-        );
+        ctx.beginPath();
+        ctx.arc(px, py, shieldRadius, 0, Math.PI * 2);
+        ctx.stroke();
 
         // Inner glow when shield is strong
         if (shieldPercent > 0.5) {
             ctx.shadowColor = '#4488ff';
             ctx.shadowBlur = shieldPercent * 10;
-            ctx.strokeRect(
-                px - player.width / 2 - shieldPadding,
-                py - player.height / 2 - shieldPadding,
-                player.width + shieldPadding * 2,
-                player.height + shieldPadding * 2
-            );
+            ctx.beginPath();
+            ctx.arc(px, py, shieldRadius, 0, Math.PI * 2);
+            ctx.stroke();
             ctx.shadowColor = 'transparent';
             ctx.shadowBlur = 0;
         }
@@ -988,9 +1086,56 @@ function renderPlayer() {
 }
 
 function renderEnemy(enemy) {
+    if (enemy.type === 'gunship') {
+        renderGunship(enemy);
+    } else {
+        renderDrifter(enemy);
+    }
+}
+
+function renderDrifter(enemy) {
     // Body
     ctx.fillStyle = '#ff4444';
     ctx.fillRect(enemy.x - enemy.width / 2, enemy.y - enemy.height / 2, enemy.width, enemy.height);
+
+    // Health bar
+    const healthPercent = enemy.health / enemy.maxHealth;
+    ctx.fillStyle = '#440000';
+    ctx.fillRect(enemy.x - enemy.width / 2, enemy.y - enemy.height / 2 - 8, enemy.width, 4);
+    ctx.fillStyle = '#ff0000';
+    ctx.fillRect(enemy.x - enemy.width / 2, enemy.y - enemy.height / 2 - 8, enemy.width * healthPercent, 4);
+
+    if (CONFIG.debug.showHitboxes) {
+        ctx.strokeStyle = '#ff0000';
+        ctx.strokeRect(enemy.x - enemy.width / 2, enemy.y - enemy.height / 2, enemy.width, enemy.height);
+    }
+}
+
+function renderGunship(enemy) {
+    // Main body - wider, more rectangular
+    ctx.fillStyle = '#cc4444';
+    ctx.fillRect(enemy.x - enemy.width / 2, enemy.y - enemy.height / 2, enemy.width, enemy.height);
+
+    // Wing details (darker red accent)
+    ctx.fillStyle = '#aa2222';
+    ctx.fillRect(enemy.x - enemy.width / 2, enemy.y - enemy.height / 2 + 5, enemy.width * 0.3, enemy.height - 10);
+    ctx.fillRect(enemy.x + enemy.width / 2 - enemy.width * 0.3, enemy.y - enemy.height / 2 + 5, enemy.width * 0.3, enemy.height - 10);
+
+    // Gun barrels (indicate it's a gunship)
+    ctx.fillStyle = '#666666';
+    const gunY1 = enemy.y - enemy.height / 4;
+    const gunY2 = enemy.y + enemy.height / 4;
+    ctx.fillRect(enemy.x - enemy.width / 2 - 8, gunY1 - 2, 10, 4);
+    ctx.fillRect(enemy.x - enemy.width / 2 - 8, gunY2 - 2, 10, 4);
+
+    // Charging indicator when firing burst
+    if (enemy.burstCount > 0) {
+        const maxBurst = CONFIG.enemyTypes.gunship.burstBulletsMax;
+        const chargePercent = 1 - (enemy.burstCount / maxBurst);
+        ctx.fillStyle = `rgba(255, 100, 0, ${0.5 + chargePercent * 0.5})`;
+        ctx.fillRect(enemy.x - enemy.width / 2 - 10, gunY1 - 3, 12, 6);
+        ctx.fillRect(enemy.x - enemy.width / 2 - 10, gunY2 - 3, 12, 6);
+    }
 
     // Health bar
     const healthPercent = enemy.health / enemy.maxHealth;
@@ -1132,6 +1277,9 @@ function restartGame() {
     // Reset input
     fireWasPressed = false;
     fireHoldTime = 0;
+
+    // Reinitialize background
+    initBackground();
 
     gameState = 'playing';
 }
