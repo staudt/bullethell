@@ -49,7 +49,7 @@ const CONFIG = {
 
     health: {
         shieldMax: 100,
-        shieldRegenDelay: 2,
+        shieldRegenDelay: 4,
         shieldRegenRate: 30,
         lifeMax: 100
     },
@@ -91,6 +91,21 @@ const CONFIG = {
             bulletDamage: 12,
             spreadAngle: Math.PI / 1.3,  // ±70 degrees
             spawnWeight: 0.3  // 30% spawn chance
+        },
+        kamikaze: {
+            width: 35,
+            height: 35,
+            health: 80,
+            mass: 1.2,
+            vxMin: -100,
+            vxMax: -70,
+            vySpeed: 150,              // Speed when aligning with player
+            vyAlignThreshold: 5,       // Pixels within player Y to consider aligned
+            chargeTime: 2.5,           // Total time from spawn to beam fire
+            beamDuration: 1.0,         // How long the beam persists
+            beamDamage: 150,           // Damage per second (continuous)
+            beamHeight: 8,             // Visual thickness of beam
+            spawnWeight: 0.15          // 15% spawn chance
         }
     },
 

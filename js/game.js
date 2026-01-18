@@ -265,7 +265,14 @@ function spawnPlayerBullet(x, y, vx, vy, damage, type) {
 function spawnEnemy() {
     // Weighted random selection
     const roll = Math.random();
-    const enemyType = roll < CONFIG.enemyTypes.gunship.spawnWeight ? 'gunship' : 'drifter';
+    let enemyType;
+    if (roll < CONFIG.enemyTypes.kamikaze.spawnWeight) {
+        enemyType = 'kamikaze';
+    } else if (roll < CONFIG.enemyTypes.kamikaze.spawnWeight + CONFIG.enemyTypes.gunship.spawnWeight) {
+        enemyType = 'gunship';
+    } else {
+        enemyType = 'drifter';
+    }
 
     let enemy;
     if (enemyType === 'gunship') {
@@ -287,6 +294,27 @@ function spawnEnemy() {
             burstTimer: 0,
             active: true,
             type: 'gunship'
+        };
+    } else if (enemyType === 'kamikaze') {
+        const config = CONFIG.enemyTypes.kamikaze;
+        enemy = {
+            x: cameraX + CONFIG.canvas.width + 50,
+            y: Math.random() * (CONFIG.canvas.height - config.height * 2) + config.height,
+            vx: config.vxMin - Math.random() * (config.vxMin - config.vxMax),
+            vy: 0,
+            knockbackVx: 0,  // Separate knockback velocity
+            knockbackVy: 0,
+            width: config.width,
+            height: config.height,
+            health: config.health,
+            maxHealth: config.health,
+            mass: config.mass,
+            state: 'aligning',           // 'aligning', 'firing', 'destroyed'
+            chargeProgress: 0,           // 0 to 1, tracks charge time
+            beamTimer: 0,                // Countdown during firing state
+            shakeOffset: { x: 0, y: 0 }, // For shake effect
+            active: true,
+            type: 'kamikaze'
         };
     } else {
         const config = CONFIG.enemyTypes.drifter;
@@ -316,6 +344,8 @@ function updateEnemy(enemy, dt) {
 
     if (enemy.type === 'gunship') {
         updateGunship(enemy, dt);
+    } else if (enemy.type === 'kamikaze') {
+        updateKamikaze(enemy, dt);
     } else {
         updateDrifter(enemy, dt);
     }
@@ -393,6 +423,85 @@ function updateGunship(enemy, dt) {
             enemy.fireTimer = config.fireRateMin + Math.random() * (config.fireRateMax - config.fireRateMin);
             enemy.burstCount = config.burstBulletsMin + Math.floor(Math.random() * (config.burstBulletsMax - config.burstBulletsMin + 1));
             enemy.burstTimer = 0;
+        }
+    }
+}
+
+function updateKamikaze(enemy, dt) {
+    const config = CONFIG.enemyTypes.kamikaze;
+
+    if (enemy.state === 'aligning') {
+        // Move vertically toward player Y position
+        const playerCenterY = player.y + player.height / 2;
+        const enemyCenterY = enemy.y + enemy.height / 2;
+        const dy = playerCenterY - enemyCenterY;
+
+        // Move toward player vertically if not aligned
+        if (Math.abs(dy) > config.vyAlignThreshold) {
+            enemy.vy = Math.sign(dy) * config.vySpeed;
+        } else {
+            enemy.vy = 0;
+        }
+
+        // Apply base velocity + knockback
+        enemy.x += (enemy.vx + enemy.knockbackVx) * dt;
+        enemy.y += (enemy.vy + enemy.knockbackVy) * dt;
+
+        // Decay knockback
+        enemy.knockbackVx *= 0.9;
+        enemy.knockbackVy *= 0.9;
+        if (Math.abs(enemy.knockbackVx) < 1) enemy.knockbackVx = 0;
+        if (Math.abs(enemy.knockbackVy) < 1) enemy.knockbackVy = 0;
+
+        // Clamp Y
+        enemy.y = Math.max(enemy.height / 2, Math.min(CONFIG.canvas.height - enemy.height / 2, enemy.y));
+
+        // Increment charge
+        enemy.chargeProgress += dt / config.chargeTime;
+        if (enemy.chargeProgress >= 1) {
+            enemy.state = 'firing';
+            enemy.beamTimer = config.beamDuration;
+            enemy.vx = 0;
+            enemy.vy = 0;
+        }
+    } else if (enemy.state === 'firing') {
+        // Stop movement and check beam collision
+        enemy.vx = 0;
+        enemy.vy = 0;
+
+        // Generate shake offset (increases over time)
+        const shakeIntensity = (1 - enemy.beamTimer / config.beamDuration) * 3;
+        enemy.shakeOffset.x = (Math.random() - 0.5) * shakeIntensity;
+        enemy.shakeOffset.y = (Math.random() - 0.5) * shakeIntensity;
+
+        // Check beam collision with player
+        checkKamikazeBeam(enemy, dt);
+
+        // Countdown beam timer
+        enemy.beamTimer -= dt;
+        if (enemy.beamTimer <= 0) {
+            enemy.state = 'destroyed';
+        }
+    } else if (enemy.state === 'destroyed') {
+        // Spawn death particles with more drama
+        spawnDeathParticles(enemy.x, enemy.y, 40);
+        addScreenShake(8);
+        enemy.active = false;
+    }
+}
+
+function checkKamikazeBeam(kamikaze, dt) {
+    const config = CONFIG.enemyTypes.kamikaze;
+    const beamY = kamikaze.y + kamikaze.height / 2;
+    const beamTop = beamY - config.beamHeight / 2;
+    const beamBottom = beamY + config.beamHeight / 2;
+
+    // Check if player overlaps beam vertically
+    if (player.y + player.height > beamTop && player.y < beamBottom) {
+        // Check if player is to the right of kamikaze
+        if (player.x > kamikaze.x) {
+            const damage = config.beamDamage * dt;
+            damagePlayer(damage);
         }
     }
 }
@@ -562,8 +671,8 @@ function spawnHitParticles(x, y, type) {
     }
 }
 
-function spawnDeathParticles(x, y) {
-    for (let i = 0; i < 20; i++) {
+function spawnDeathParticles(x, y, count = 20) {
+    for (let i = 0; i < count; i++) {
         const angle = Math.random() * Math.PI * 2;
         const speed = 150 + Math.random() * 250;
         spawnParticle(
@@ -1088,6 +1197,8 @@ function renderPlayer() {
 function renderEnemy(enemy) {
     if (enemy.type === 'gunship') {
         renderGunship(enemy);
+    } else if (enemy.type === 'kamikaze') {
+        renderKamikaze(enemy);
     } else {
         renderDrifter(enemy);
     }
@@ -1147,6 +1258,80 @@ function renderGunship(enemy) {
     if (CONFIG.debug.showHitboxes) {
         ctx.strokeStyle = '#ff0000';
         ctx.strokeRect(enemy.x - enemy.width / 2, enemy.y - enemy.height / 2, enemy.width, enemy.height);
+    }
+}
+
+function renderKamikaze(enemy) {
+    const config = CONFIG.enemyTypes.kamikaze;
+
+    // Apply shake offset to render position
+    const renderX = enemy.x + enemy.shakeOffset.x;
+    const renderY = enemy.y + enemy.shakeOffset.y;
+
+    if (enemy.state === 'aligning') {
+        // Calculate blink effect: frequency increases with charge
+        const blinkFreq = 2 + enemy.chargeProgress * 8;
+        const blinkPhase = Math.sin(timestamp * blinkFreq * Math.PI);
+        const alpha = blinkPhase > 0 ? 1.0 : 0.3;
+
+        // Color shifts from red toward bright orange as it charges
+        const chargeColor = Math.floor(255 * enemy.chargeProgress);
+        ctx.fillStyle = `rgba(255, ${100 + chargeColor}, 0, ${alpha})`;
+
+        // Body
+        ctx.fillRect(renderX - enemy.width / 2, renderY - enemy.height / 2, enemy.width, enemy.height);
+
+        // Eyes/details - bright when blinking
+        ctx.fillStyle = `rgba(255, 255, 100, ${alpha})`;
+        ctx.fillRect(renderX - 8, renderY - 6, 4, 4);
+        ctx.fillRect(renderX + 4, renderY - 6, 4, 4);
+    } else if (enemy.state === 'firing') {
+        // Solid bright color during firing
+        ctx.fillStyle = '#ffcc00';
+        ctx.fillRect(renderX - enemy.width / 2, renderY - enemy.height / 2, enemy.width, enemy.height);
+
+        // Glowing effect
+        ctx.fillStyle = 'rgba(255, 200, 0, 0.4)';
+        ctx.fillRect(renderX - enemy.width / 2 - 3, renderY - enemy.height / 2 - 3, enemy.width + 6, enemy.height + 6);
+
+        // Draw beam from kamikaze to right edge of screen
+        const beamY = renderY;
+
+        // Outer glow (semi-transparent, wider)
+        ctx.strokeStyle = 'rgba(255, 100, 0, 0.3)';
+        ctx.lineWidth = 20;
+        ctx.beginPath();
+        ctx.moveTo(renderX + enemy.width / 2, beamY);
+        ctx.lineTo(CONFIG.canvas.width, beamY);
+        ctx.stroke();
+
+        // Main beam
+        ctx.strokeStyle = 'rgba(255, 200, 0, 0.9)';
+        ctx.lineWidth = config.beamHeight + 2;
+        ctx.beginPath();
+        ctx.moveTo(renderX + enemy.width / 2, beamY);
+        ctx.lineTo(CONFIG.canvas.width, beamY);
+        ctx.stroke();
+
+        // Bright core
+        ctx.strokeStyle = '#ffff88';
+        ctx.lineWidth = config.beamHeight * 0.6;
+        ctx.beginPath();
+        ctx.moveTo(renderX + enemy.width / 2, beamY);
+        ctx.lineTo(CONFIG.canvas.width, beamY);
+        ctx.stroke();
+    }
+
+    // Health bar (visible in both states)
+    const healthPercent = enemy.health / enemy.maxHealth;
+    ctx.fillStyle = '#440000';
+    ctx.fillRect(renderX - enemy.width / 2, renderY - enemy.height / 2 - 8, enemy.width, 4);
+    ctx.fillStyle = '#ff0000';
+    ctx.fillRect(renderX - enemy.width / 2, renderY - enemy.height / 2 - 8, enemy.width * healthPercent, 4);
+
+    if (CONFIG.debug.showHitboxes) {
+        ctx.strokeStyle = '#ff0000';
+        ctx.strokeRect(renderX - enemy.width / 2, renderY - enemy.height / 2, enemy.width, enemy.height);
     }
 }
 
