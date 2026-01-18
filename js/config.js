@@ -93,19 +93,19 @@ const CONFIG = {
             spawnWeight: 0.3  // 30% spawn chance
         },
         kamikaze: {
-            width: 35,
+            width: 55,
             height: 35,
             health: 80,
-            mass: 1.2,
+            mass: 0.5,
             vxMin: -100,
             vxMax: -70,
             vySpeed: 150,              // Speed when aligning with player
             vyAlignThreshold: 5,       // Pixels within player Y to consider aligned
-            chargeTime: 2.5,           // Total time from spawn to beam fire
+            chargeTime: 4,           // Total time from spawn to beam fire
             beamDuration: 1.0,         // How long the beam persists
-            beamDamage: 150,           // Damage per second (continuous)
-            beamHeight: 8,             // Visual thickness of beam
-            spawnWeight: 0.15          // 15% spawn chance
+            beamDamage: 300,           // Damage per second (continuous)
+            beamHeight: 10,             // Visual thickness of beam
+            spawnWeight: 0.2          // 15% spawn chance
         }
     },
 

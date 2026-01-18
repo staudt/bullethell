@@ -45,6 +45,9 @@ let hitStopTimer = 0;
 // Spawn timer
 let enemySpawnTimer = 0;
 
+// Global elapsed time for animation
+let elapsedTime = 0;
+
 // -----------------------------------------------------------------------------
 // INPUT STATE
 // -----------------------------------------------------------------------------
@@ -458,6 +461,12 @@ function updateKamikaze(enemy, dt) {
 
         // Increment charge
         enemy.chargeProgress += dt / config.chargeTime;
+
+        // Increase shake as it charges (none at start, max 3 near end)
+        const chargeShakeIntensity = enemy.chargeProgress * 3;
+        enemy.shakeOffset.x = (Math.random() - 0.5) * chargeShakeIntensity;
+        enemy.shakeOffset.y = (Math.random() - 0.5) * chargeShakeIntensity;
+
         if (enemy.chargeProgress >= 1) {
             enemy.state = 'firing';
             enemy.beamTimer = config.beamDuration;
@@ -469,8 +478,8 @@ function updateKamikaze(enemy, dt) {
         enemy.vx = 0;
         enemy.vy = 0;
 
-        // Generate shake offset (increases over time)
-        const shakeIntensity = (1 - enemy.beamTimer / config.beamDuration) * 3;
+        // Generate shake offset (heavy shake during firing)
+        const shakeIntensity = 5 + Math.random() * 3; // 5-8 pixels of shake
         enemy.shakeOffset.x = (Math.random() - 0.5) * shakeIntensity;
         enemy.shakeOffset.y = (Math.random() - 0.5) * shakeIntensity;
 
@@ -492,16 +501,51 @@ function updateKamikaze(enemy, dt) {
 
 function checkKamikazeBeam(kamikaze, dt) {
     const config = CONFIG.enemyTypes.kamikaze;
-    const beamY = kamikaze.y + kamikaze.height / 2;
-    const beamTop = beamY - config.beamHeight / 2;
-    const beamBottom = beamY + config.beamHeight / 2;
 
-    // Check if player overlaps beam vertically
-    if (player.y + player.height > beamTop && player.y < beamBottom) {
-        // Check if player is to the right of kamikaze
-        if (player.x > kamikaze.x) {
+    // Beam extends from kamikaze to far left (shooting backwards)
+    const beamLeftX = cameraX - 500;  // Far left edge
+    const beamRightX = kamikaze.x + kamikaze.width / 2;  // Kamikaze front
+
+    // Beam Y position (center of beam)
+    const beamCenterY = kamikaze.y + kamikaze.height / 2;
+    const beamTop = beamCenterY - config.beamHeight / 2;
+    const beamBottom = beamCenterY + config.beamHeight / 2;
+
+    const playerHitbox = getPlayerHitbox();
+
+    // Check if player overlaps beam vertically (within beam bounds)
+    const playerBottom = playerHitbox.y + playerHitbox.height;
+    const playerTop = playerHitbox.y;
+
+    if (playerBottom > beamTop && playerTop < beamBottom) {
+        // Check if player is in beam's horizontal range
+        const playerRight = playerHitbox.x + playerHitbox.width;
+        const playerLeft = playerHitbox.x;
+
+        if (playerRight > beamLeftX && playerLeft < beamRightX) {
             const damage = config.beamDamage * dt;
-            damagePlayer(damage);
+            damagePlayer(damage, kamikaze.x, kamikaze.y);
+        }
+    }
+
+    // Damage other enemy ships
+    for (const enemy of enemies) {
+        if (!enemy.active || enemy === kamikaze) continue;
+
+        const enemyHitbox = getEnemyHitbox(enemy);
+        const enemyBottom = enemyHitbox.y + enemyHitbox.height;
+        const enemyTop = enemyHitbox.y;
+
+        // Check vertical overlap
+        if (enemyBottom > beamTop && enemyTop < beamBottom) {
+            // Check horizontal overlap
+            const enemyRight = enemyHitbox.x + enemyHitbox.width;
+            const enemyLeft = enemyHitbox.x;
+
+            if (enemyRight > beamLeftX && enemyLeft < beamRightX) {
+                const damage = config.beamDamage * dt;
+                damageEnemy(enemy, damage, 'beam');
+            }
         }
     }
 }
@@ -827,6 +871,9 @@ function checkCollisions() {
 // UPDATE
 // -----------------------------------------------------------------------------
 function update(dt) {
+    // Update global elapsed time for animations
+    elapsedTime += dt;
+
     // Hit stop
     if (hitStopTimer > 0) {
         hitStopTimer -= dt;
@@ -1271,12 +1318,13 @@ function renderKamikaze(enemy) {
     if (enemy.state === 'aligning') {
         // Calculate blink effect: frequency increases with charge
         const blinkFreq = 2 + enemy.chargeProgress * 8;
-        const blinkPhase = Math.sin(timestamp * blinkFreq * Math.PI);
+        const blinkPhase = Math.sin(elapsedTime * blinkFreq * Math.PI);
         const alpha = blinkPhase > 0 ? 1.0 : 0.3;
 
-        // Color shifts from red toward bright orange as it charges
-        const chargeColor = Math.floor(255 * enemy.chargeProgress);
-        ctx.fillStyle = `rgba(255, ${100 + chargeColor}, 0, ${alpha})`;
+        // Color shifts from YELLOW to RED as it charges
+        // Start: yellow (255, 255, 0), End: red (255, 0, 0)
+        const greenChannel = Math.floor(255 * (1 - enemy.chargeProgress));
+        ctx.fillStyle = `rgba(255, ${greenChannel}, 0, ${alpha})`;
 
         // Body
         ctx.fillRect(renderX - enemy.width / 2, renderY - enemy.height / 2, enemy.width, enemy.height);
@@ -1287,38 +1335,43 @@ function renderKamikaze(enemy) {
         ctx.fillRect(renderX + 4, renderY - 6, 4, 4);
     } else if (enemy.state === 'firing') {
         // Solid bright color during firing
-        ctx.fillStyle = '#ffcc00';
+        ctx.fillStyle = '#ff0000';
         ctx.fillRect(renderX - enemy.width / 2, renderY - enemy.height / 2, enemy.width, enemy.height);
 
-        // Glowing effect
-        ctx.fillStyle = 'rgba(255, 200, 0, 0.4)';
-        ctx.fillRect(renderX - enemy.width / 2 - 3, renderY - enemy.height / 2 - 3, enemy.width + 6, enemy.height + 6);
+        // Intense glowing effect
+        ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+        ctx.fillRect(renderX - enemy.width / 2 - 5, renderY - enemy.height / 2 - 5, enemy.width + 10, enemy.height + 10);
 
-        // Draw beam from kamikaze to right edge of screen
-        const beamY = renderY;
+        // Draw beam from kamikaze to right edge of screen with shake
+        const baseBeamY = renderY;
+        const beamShake = (Math.random() - 0.5) * 2; // Small shake to beam
+        const beamY = baseBeamY + beamShake;
 
-        // Outer glow (semi-transparent, wider)
-        ctx.strokeStyle = 'rgba(255, 100, 0, 0.3)';
-        ctx.lineWidth = 20;
+        // Beam extends far to the left (in world space, shooting backwards)
+        const beamEndX = cameraX - 500;
+
+        // Outer glow (semi-transparent, wider, red)
+        ctx.strokeStyle = 'rgba(255, 0, 0, 0.4)';
+        ctx.lineWidth = 24;
         ctx.beginPath();
         ctx.moveTo(renderX + enemy.width / 2, beamY);
-        ctx.lineTo(CONFIG.canvas.width, beamY);
+        ctx.lineTo(beamEndX, beamY);
         ctx.stroke();
 
-        // Main beam
-        ctx.strokeStyle = 'rgba(255, 200, 0, 0.9)';
-        ctx.lineWidth = config.beamHeight + 2;
+        // Main beam (bright red)
+        ctx.strokeStyle = 'rgba(255, 50, 0, 0.95)';
+        ctx.lineWidth = config.beamHeight + 3;
         ctx.beginPath();
         ctx.moveTo(renderX + enemy.width / 2, beamY);
-        ctx.lineTo(CONFIG.canvas.width, beamY);
+        ctx.lineTo(beamEndX, beamY);
         ctx.stroke();
 
-        // Bright core
-        ctx.strokeStyle = '#ffff88';
-        ctx.lineWidth = config.beamHeight * 0.6;
+        // Bright core (pure white/bright yellow)
+        ctx.strokeStyle = '#ffff44';
+        ctx.lineWidth = config.beamHeight * 0.5;
         ctx.beginPath();
         ctx.moveTo(renderX + enemy.width / 2, beamY);
-        ctx.lineTo(CONFIG.canvas.width, beamY);
+        ctx.lineTo(beamEndX, beamY);
         ctx.stroke();
     }
 
