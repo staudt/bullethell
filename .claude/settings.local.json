@@ -10,7 +10,8 @@
       "Bash(git push:*)",
       "Bash(git pull:*)",
       "Bash(powershell -Command:*)",
-      "Bash(node -c:*)"
+      "Bash(node -c:*)",
+      "Bash(start index.html)"
     ]
   }
 }

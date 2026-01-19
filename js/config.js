@@ -134,5 +134,25 @@ const CONFIG = {
         infiniteCharge: false,
         showHitboxes: false,
         noEnemies: false
+    },
+
+    mobile: {
+        enabled: true,  // Will be set dynamically at runtime
+        joystick: {
+            radius: 100,
+            innerRadius: 40,
+            deadZone: 0.15,  // 15% of radius
+            opacity: 0.4
+        },
+        buttons: {
+            fireRadius: 80,
+            dashRadius: 60,
+            spacing: 20,  // Gap between buttons
+            opacity: 0.4,
+            activeOpacity: 0.7
+        },
+        layout: {
+            edgePadding: 40  // Distance from screen edges
+        }
     }
 };

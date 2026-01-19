@@ -27,6 +27,36 @@ resizeCanvas();
 // Initialize background system
 initBackground();
 
+// Detect mobile support at runtime
+(function detectMobile() {
+    // Check for touch support
+    const hasTouchSupport = ('ontouchstart' in window) ||
+                           (navigator.maxTouchPoints > 0) ||
+                           (navigator.msMaxTouchPoints > 0);
+
+    // Check for mobile user agent
+    const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
+    // Only enable if BOTH touch support AND (mobile device OR small screen)
+    // This prevents desktop browsers with touch screens from showing mobile controls
+    CONFIG.mobile.enabled = hasTouchSupport && (isMobileDevice || window.innerWidth < 768);
+
+    console.log('Mobile controls enabled:', CONFIG.mobile.enabled);
+    console.log('Touch support:', hasTouchSupport, '| Mobile UA:', isMobileDevice, '| Small screen:', window.innerWidth < 768);
+})();
+
+// Debug: Press 'M' to toggle mobile controls manually (useful for testing)
+window.addEventListener('keydown', (e) => {
+    if (e.key.toLowerCase() === 'm') {
+        CONFIG.mobile.enabled = !CONFIG.mobile.enabled;
+        console.log('Mobile controls toggled:', CONFIG.mobile.enabled ? 'ON' : 'OFF');
+
+        // Show visual feedback
+        const msg = CONFIG.mobile.enabled ? 'Mobile Controls: ON' : 'Mobile Controls: OFF';
+        console.log('%c' + msg, 'background: #222; color: #0f0; font-size: 16px; padding: 4px 8px;');
+    }
+});
+
 // -----------------------------------------------------------------------------
 // GAME STATE
 // -----------------------------------------------------------------------------
@@ -59,6 +89,29 @@ let fireHoldTime = 0;
 
 // Double-tap dash tracking
 const lastKeyPress = { w: 0, a: 0, s: 0, d: 0 };
+
+// Touch input state (mobile)
+const touch = {
+    joystick: {
+        active: false,
+        id: null,
+        startX: 0,
+        startY: 0,
+        currentX: 0,
+        currentY: 0,
+        deltaX: 0,  // Normalized -1 to 1
+        deltaY: 0   // Normalized -1 to 1
+    },
+    fireButton: {
+        active: false,
+        id: null,
+        pressed: false
+    },
+    dashButton: {
+        active: false,
+        id: null
+    }
+};
 
 // -----------------------------------------------------------------------------
 // PLAYER
@@ -154,6 +207,187 @@ window.addEventListener('mouseup', (e) => {
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 // -----------------------------------------------------------------------------
+// TOUCH INPUT HANDLERS (Mobile)
+// -----------------------------------------------------------------------------
+// Helper functions (always available)
+function getTouchPos(touchEvent) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+        x: touchEvent.clientX - rect.left,
+        y: touchEvent.clientY - rect.top
+    };
+}
+
+// Helper function to check if touch is inside a circle
+function isTouchInCircle(touchX, touchY, centerX, centerY, radius) {
+    const dx = touchX - centerX;
+    const dy = touchY - centerY;
+    return Math.sqrt(dx * dx + dy * dy) <= radius;
+}
+
+// Get control positions (called each frame for responsive layout)
+function getControlPositions() {
+    const padding = CONFIG.mobile.layout.edgePadding;
+    const joystickRadius = CONFIG.mobile.joystick.radius;
+    const fireRadius = CONFIG.mobile.buttons.fireRadius;
+    const dashRadius = CONFIG.mobile.buttons.dashRadius;
+    const spacing = CONFIG.mobile.buttons.spacing;
+
+    return {
+        joystick: {
+            x: padding + joystickRadius,
+            y: CONFIG.canvas.height - padding - joystickRadius
+        },
+        fire: {
+            x: CONFIG.canvas.width - padding - fireRadius,
+            y: CONFIG.canvas.height - padding - fireRadius
+        },
+        dash: {
+            x: CONFIG.canvas.width - padding - fireRadius - dashRadius - spacing,
+            y: CONFIG.canvas.height - padding - fireRadius - dashRadius - spacing
+        }
+    };
+}
+
+canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    const positions = getControlPositions();
+
+    for (let i = 0; i < e.changedTouches.length; i++) {
+        const touchEvent = e.changedTouches[i];
+        const pos = getTouchPos(touchEvent);
+
+        // Check joystick
+        if (!touch.joystick.active && isTouchInCircle(
+            pos.x, pos.y,
+            positions.joystick.x, positions.joystick.y,
+            CONFIG.mobile.joystick.radius
+        )) {
+            touch.joystick.active = true;
+            touch.joystick.id = touchEvent.identifier;
+            touch.joystick.startX = positions.joystick.x;
+            touch.joystick.startY = positions.joystick.y;
+            touch.joystick.currentX = pos.x;
+            touch.joystick.currentY = pos.y;
+            continue;
+        }
+
+        // Check fire button
+        if (!touch.fireButton.active && isTouchInCircle(
+            pos.x, pos.y,
+            positions.fire.x, positions.fire.y,
+            CONFIG.mobile.buttons.fireRadius
+        )) {
+            touch.fireButton.active = true;
+            touch.fireButton.id = touchEvent.identifier;
+            touch.fireButton.pressed = true;
+            continue;
+        }
+
+        // Check dash button
+        if (!touch.dashButton.active && isTouchInCircle(
+            pos.x, pos.y,
+            positions.dash.x, positions.dash.y,
+            CONFIG.mobile.buttons.dashRadius
+        )) {
+            touch.dashButton.active = true;
+            touch.dashButton.id = touchEvent.identifier;
+            triggerDashFromTouch();
+            continue;
+        }
+    }
+});
+
+canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+
+    for (let i = 0; i < e.changedTouches.length; i++) {
+        const touchEvent = e.changedTouches[i];
+        const pos = getTouchPos(touchEvent);
+
+        // Update joystick
+        if (touch.joystick.active && touchEvent.identifier === touch.joystick.id) {
+            touch.joystick.currentX = pos.x;
+            touch.joystick.currentY = pos.y;
+
+            // Calculate delta from start position
+            const dx = pos.x - touch.joystick.startX;
+            const dy = pos.y - touch.joystick.startY;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            const maxDistance = CONFIG.mobile.joystick.radius;
+
+            // Apply dead zone
+            const deadZone = CONFIG.mobile.joystick.deadZone * maxDistance;
+            if (distance < deadZone) {
+                touch.joystick.deltaX = 0;
+                touch.joystick.deltaY = 0;
+            } else {
+                // Normalize to -1 to 1 range
+                const normalizedDistance = Math.min(distance, maxDistance) / maxDistance;
+                touch.joystick.deltaX = (dx / distance) * normalizedDistance;
+                touch.joystick.deltaY = (dy / distance) * normalizedDistance;
+            }
+        }
+    }
+});
+
+canvas.addEventListener('touchend', (e) => {
+    e.preventDefault();
+
+    for (let i = 0; i < e.changedTouches.length; i++) {
+        const touchEvent = e.changedTouches[i];
+
+        // Release joystick
+        if (touch.joystick.active && touchEvent.identifier === touch.joystick.id) {
+            touch.joystick.active = false;
+            touch.joystick.id = null;
+            touch.joystick.deltaX = 0;
+            touch.joystick.deltaY = 0;
+        }
+
+        // Release fire button
+        if (touch.fireButton.active && touchEvent.identifier === touch.fireButton.id) {
+            touch.fireButton.active = false;
+            touch.fireButton.id = null;
+            touch.fireButton.pressed = false;
+        }
+
+        // Release dash button
+        if (touch.dashButton.active && touchEvent.identifier === touch.dashButton.id) {
+            touch.dashButton.active = false;
+            touch.dashButton.id = null;
+        }
+    }
+});
+
+canvas.addEventListener('touchcancel', (e) => {
+    // Treat cancel same as touchend
+    e.preventDefault();
+
+    for (let i = 0; i < e.changedTouches.length; i++) {
+        const touchEvent = e.changedTouches[i];
+
+        if (touch.joystick.active && touchEvent.identifier === touch.joystick.id) {
+            touch.joystick.active = false;
+            touch.joystick.id = null;
+            touch.joystick.deltaX = 0;
+            touch.joystick.deltaY = 0;
+        }
+
+        if (touch.fireButton.active && touchEvent.identifier === touch.fireButton.id) {
+            touch.fireButton.active = false;
+            touch.fireButton.id = null;
+            touch.fireButton.pressed = false;
+        }
+
+        if (touch.dashButton.active && touchEvent.identifier === touch.dashButton.id) {
+            touch.dashButton.active = false;
+            touch.dashButton.id = null;
+        }
+    }
+});
+
+// -----------------------------------------------------------------------------
 // DASH
 // -----------------------------------------------------------------------------
 function triggerDash(key) {
@@ -168,6 +402,57 @@ function triggerDash(key) {
     else if (key === 's') { dx = 0.5; dy = 0.866; }
     else if (key === 'a') { dx = -0.5; dy = 0; }
     else if (key === 'd') { dx = 1; dy = 0; }
+
+    // Normalize
+    const len = Math.sqrt(dx * dx + dy * dy);
+    player.dashDirX = dx / len;
+    player.dashDirY = dy / len;
+
+    // Calculate dash duration and invuln time based on charge
+    const chargePercent = player.charge / CONFIG.charge.max;
+    const dashDuration = CONFIG.dash.durationMin + (CONFIG.dash.durationMax - CONFIG.dash.durationMin) * chargePercent;
+    const invulnTime = CONFIG.dash.invulnTimeMin + (CONFIG.dash.invulnTimeMax - CONFIG.dash.invulnTimeMin) * chargePercent;
+
+    // Start dash
+    player.isDashing = true;
+    player.dashTimer = dashDuration;
+    player.dashCharge = player.charge;
+    player.invulnTimer = invulnTime;
+
+    // Consume charge and trigger regen delay
+    if (!CONFIG.debug.infiniteCharge) {
+        player.charge = 0;
+        player.chargeRegenTimer = CONFIG.charge.regenDelay;
+    }
+
+    // Screen shake
+    addScreenShake(8 + player.dashCharge * 12);
+
+    // Particles
+    spawnDashParticles();
+}
+
+// Trigger dash from touch (mobile)
+function triggerDashFromTouch() {
+    if (player.isDashing || !player.active) return;
+
+    // Can't dash without charge
+    if (player.charge <= 0) return;
+
+    // Get dash direction from joystick state
+    let dx = 1, dy = 0;  // Default: forward (right)
+
+    if (touch.joystick.active) {
+        // Use joystick direction
+        const magnitude = Math.sqrt(
+            touch.joystick.deltaX * touch.joystick.deltaX +
+            touch.joystick.deltaY * touch.joystick.deltaY
+        );
+        if (magnitude > 0.1) {  // Avoid division by zero
+            dx = touch.joystick.deltaX;
+            dy = touch.joystick.deltaY;
+        }
+    }
 
     // Normalize
     const len = Math.sqrt(dx * dx + dy * dy);
@@ -899,6 +1184,11 @@ function update(dt) {
     // Update global elapsed time for animations
     elapsedTime += dt;
 
+    // Skip updates if showing orientation warning
+    if (gameState === 'orientation-warning') {
+        return;
+    }
+
     // Hit stop
     if (hitStopTimer > 0) {
         hitStopTimer -= dt;
@@ -966,13 +1256,20 @@ function updatePlayer(dt) {
         player.vx = 0;
         player.vy = 0;
 
+        // Keyboard input (desktop)
         if (keys['w'] || keys['arrowup']) player.vy = -CONFIG.player.speed;
         if (keys['s'] || keys['arrowdown']) player.vy = CONFIG.player.speed;
         if (keys['a'] || keys['arrowleft']) player.vx = -CONFIG.player.speed;
         if (keys['d'] || keys['arrowright']) player.vx = CONFIG.player.speed;
 
-        // Normalize diagonal
-        if (player.vx !== 0 && player.vy !== 0) {
+        // Touch joystick input (mobile) - overrides keyboard if active
+        if (touch.joystick.active) {
+            player.vx = touch.joystick.deltaX * CONFIG.player.speed;
+            player.vy = touch.joystick.deltaY * CONFIG.player.speed;
+        }
+
+        // Normalize diagonal (keyboard only - joystick is already normalized)
+        if (!touch.joystick.active && player.vx !== 0 && player.vy !== 0) {
             player.vx *= 0.707;
             player.vy *= 0.707;
         }
@@ -1006,8 +1303,8 @@ function updatePlayer(dt) {
         player.shield = Math.min(CONFIG.health.shieldMax, player.shield + CONFIG.health.shieldRegenRate * dt);
     }
 
-    // Fire input
-    firePressed = keys[' '] || keys['space'] || mouseDown;
+    // Fire input (keyboard, mouse, or touch)
+    firePressed = keys[' '] || keys['space'] || mouseDown || touch.fireButton.pressed;
 
     // Update charge regen timer
     if (player.chargeRegenTimer > 0) {
@@ -1517,7 +1814,7 @@ function renderUI() {
     const uiX = 20;
     const uiY = 20;
 
-    // Life bar
+    // Life bar (only meter shown)
     ctx.fillStyle = '#440000';
     ctx.fillRect(uiX, uiY, 200, 16);
     ctx.fillStyle = '#ff4444';
@@ -1525,28 +1822,10 @@ function renderUI() {
     ctx.strokeStyle = '#ffffff';
     ctx.strokeRect(uiX, uiY, 200, 16);
 
-    // Shield bar
-    ctx.fillStyle = '#000044';
-    ctx.fillRect(uiX, uiY + 20, 200, 12);
-    ctx.fillStyle = '#4488ff';
-    ctx.fillRect(uiX, uiY + 20, 200 * (player.shield / CONFIG.health.shieldMax), 12);
-    ctx.strokeStyle = '#ffffff';
-    ctx.strokeRect(uiX, uiY + 20, 200, 12);
-
-    // Charge bar
-    ctx.fillStyle = '#222';
-    ctx.fillRect(uiX, uiY + 40, 200, 20);
-    ctx.fillStyle = '#ffaa00';
-    ctx.fillRect(uiX, uiY + 40, 200 * (player.charge / CONFIG.charge.max), 20);
-    ctx.strokeStyle = '#ffffff';
-    ctx.strokeRect(uiX, uiY + 40, 200, 20);
-
-    // Labels
+    // Label
     ctx.fillStyle = '#ffffff';
     ctx.font = '12px monospace';
     ctx.fillText('LIFE', uiX + 205, uiY + 12);
-    ctx.fillText('SHIELD', uiX + 205, uiY + 30);
-    ctx.fillText('CHARGE', uiX + 205, uiY + 55);
 
     // Death screen
     if (gameState === 'dead') {
@@ -1574,6 +1853,147 @@ function renderUI() {
         ctx.fillText(`Enemy bullets: ${enemyBullets.length}`, uiX, CONFIG.canvas.height - 30);
         ctx.fillText(`Particles: ${particles.length}`, uiX, CONFIG.canvas.height - 15);
     }
+
+    // Mobile controls (only render on touch devices)
+    if (CONFIG.mobile.enabled) {
+        renderMobileControls();
+    }
+}
+
+// Render mobile touch controls
+function renderMobileControls() {
+    const padding = CONFIG.mobile.layout.edgePadding;
+    const joystickRadius = CONFIG.mobile.joystick.radius;
+    const joystickInnerRadius = CONFIG.mobile.joystick.innerRadius;
+    const fireRadius = CONFIG.mobile.buttons.fireRadius;
+    const dashRadius = CONFIG.mobile.buttons.dashRadius;
+    const spacing = CONFIG.mobile.buttons.spacing;
+
+    // Control positions
+    const joystickX = padding + joystickRadius;
+    const joystickY = CONFIG.canvas.height - padding - joystickRadius;
+    const fireX = CONFIG.canvas.width - padding - fireRadius;
+    const fireY = CONFIG.canvas.height - padding - fireRadius;
+    const dashX = CONFIG.canvas.width - padding - fireRadius - dashRadius - spacing;
+    const dashY = CONFIG.canvas.height - padding - fireRadius - dashRadius - spacing;
+
+    // Joystick
+    const joystickOpacity = touch.joystick.active ? 0.6 : CONFIG.mobile.joystick.opacity;
+
+    // Outer circle
+    ctx.strokeStyle = `rgba(255, 255, 255, ${joystickOpacity})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(joystickX, joystickY, joystickRadius, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Inner circle (current position)
+    let innerX = joystickX;
+    let innerY = joystickY;
+
+    if (touch.joystick.active) {
+        // Position inner circle based on touch offset
+        const dx = touch.joystick.currentX - touch.joystick.startX;
+        const dy = touch.joystick.currentY - touch.joystick.startY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        const maxDistance = joystickRadius - joystickInnerRadius;
+
+        if (distance > 0) {
+            const clampedDistance = Math.min(distance, maxDistance);
+            innerX = joystickX + (dx / distance) * clampedDistance;
+            innerY = joystickY + (dy / distance) * clampedDistance;
+        }
+
+        // Connection line
+        ctx.strokeStyle = `rgba(0, 200, 255, 0.5)`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(joystickX, joystickY);
+        ctx.lineTo(innerX, innerY);
+        ctx.stroke();
+    }
+
+    // Inner circle fill
+    ctx.fillStyle = touch.joystick.active
+        ? `rgba(0, 200, 255, ${joystickOpacity})`
+        : `rgba(255, 255, 255, ${joystickOpacity})`;
+    ctx.beginPath();
+    ctx.arc(innerX, innerY, joystickInnerRadius, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Fire button
+    const fireOpacity = touch.fireButton.pressed
+        ? CONFIG.mobile.buttons.activeOpacity
+        : CONFIG.mobile.buttons.opacity;
+
+    // Outer circle
+    ctx.strokeStyle = `rgba(255, 80, 80, ${fireOpacity})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(fireX, fireY, fireRadius, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Fill when pressed
+    if (touch.fireButton.pressed) {
+        ctx.fillStyle = `rgba(255, 80, 80, ${fireOpacity * 0.5})`;
+        ctx.beginPath();
+        ctx.arc(fireX, fireY, fireRadius, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // Fire icon text
+    ctx.fillStyle = `rgba(255, 255, 255, ${fireOpacity})`;
+    ctx.font = 'bold 32px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('F', fireX, fireY);
+
+    // Dash button
+    const dashOpacity = touch.dashButton.active
+        ? CONFIG.mobile.buttons.activeOpacity
+        : CONFIG.mobile.buttons.opacity;
+
+    // Outer circle with charge-based color
+    const canDash = player.charge > 0;
+    const dashColor = canDash ? 'rgba(80, 255, 80' : 'rgba(100, 100, 100';
+    ctx.strokeStyle = `${dashColor}, ${dashOpacity})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(dashX, dashY, dashRadius, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Fill when pressed
+    if (touch.dashButton.active) {
+        ctx.fillStyle = `${dashColor}, ${dashOpacity * 0.5})`;
+        ctx.beginPath();
+        ctx.arc(dashX, dashY, dashRadius, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // Dash icon text
+    ctx.fillStyle = `rgba(255, 255, 255, ${dashOpacity})`;
+    ctx.font = 'bold 28px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('D', dashX, dashY);
+
+    // Direction indicator (small arrow showing joystick direction)
+    if (touch.joystick.active && Math.sqrt(touch.joystick.deltaX ** 2 + touch.joystick.deltaY ** 2) > 0.1) {
+        const arrowLength = 15;
+        const arrowX = dashX + touch.joystick.deltaX * arrowLength;
+        const arrowY = dashY + touch.joystick.deltaY * arrowLength;
+
+        ctx.strokeStyle = `rgba(255, 255, 255, ${dashOpacity})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(dashX, dashY);
+        ctx.lineTo(arrowX, arrowY);
+        ctx.stroke();
+    }
+
+    // Reset text alignment
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
 }
 
 // -----------------------------------------------------------------------------
@@ -1621,6 +2041,33 @@ function restartGame() {
 
     gameState = 'playing';
 }
+
+// -----------------------------------------------------------------------------
+// ORIENTATION DETECTION (Mobile)
+// -----------------------------------------------------------------------------
+function checkOrientation() {
+    if (!CONFIG.mobile.enabled) return;
+
+    const orientationWarning = document.getElementById('orientation-warning');
+    const isPortrait = window.innerHeight > window.innerWidth;
+
+    if (isPortrait) {
+        // Show orientation warning
+        orientationWarning.classList.add('show');
+        gameState = 'orientation-warning';
+    } else {
+        // Hide orientation warning and resume game
+        orientationWarning.classList.remove('show');
+        if (gameState === 'orientation-warning') {
+            gameState = 'playing';
+        }
+    }
+}
+
+// Always set up orientation listeners, the function will check if mobile is enabled
+checkOrientation();
+window.addEventListener('orientationchange', checkOrientation);
+window.addEventListener('resize', checkOrientation);
 
 // -----------------------------------------------------------------------------
 // GAME LOOP
