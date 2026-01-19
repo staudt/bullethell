@@ -75,6 +75,7 @@ const player = {
 
     // Combat
     charge: 0,
+    chargeRegenTimer: 0,  // Delay before charge starts regenerating
     machineGunCooldown: 0,
 
     // Dash
@@ -158,6 +159,9 @@ canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 function triggerDash(key) {
     if (player.isDashing || !player.active) return;
 
+    // Can't dash without charge
+    if (player.charge <= 0) return;
+
     // Determine dash direction
     let dx = 1, dy = 0;
     if (key === 'w') { dx = 0.5; dy = -0.866; }
@@ -170,15 +174,21 @@ function triggerDash(key) {
     player.dashDirX = dx / len;
     player.dashDirY = dy / len;
 
+    // Calculate dash duration and invuln time based on charge
+    const chargePercent = player.charge / CONFIG.charge.max;
+    const dashDuration = CONFIG.dash.durationMin + (CONFIG.dash.durationMax - CONFIG.dash.durationMin) * chargePercent;
+    const invulnTime = CONFIG.dash.invulnTimeMin + (CONFIG.dash.invulnTimeMax - CONFIG.dash.invulnTimeMin) * chargePercent;
+
     // Start dash
     player.isDashing = true;
-    player.dashTimer = CONFIG.dash.duration;
+    player.dashTimer = dashDuration;
     player.dashCharge = player.charge;
-    player.invulnTimer = CONFIG.dash.invulnTime;
+    player.invulnTimer = invulnTime;
 
-    // Consume charge
+    // Consume charge and trigger regen delay
     if (!CONFIG.debug.infiniteCharge) {
         player.charge = 0;
+        player.chargeRegenTimer = CONFIG.charge.regenDelay;
     }
 
     // Screen shake
@@ -219,6 +229,20 @@ function fireMachineGun(dt) {
 
 function fireShotgun() {
     const chargePercent = player.charge / CONFIG.charge.max;
+
+    // If no charge, fire a single machine gun shot instead
+    if (chargePercent <= 0) {
+        spawnPlayerBullet(
+            player.x + player.width / 2,
+            player.y,
+            CONFIG.machineGun.bulletSpeed,
+            0,
+            CONFIG.machineGun.damage,
+            'machinegun'
+        );
+        return;
+    }
+
     const pelletCount = Math.floor(CONFIG.shotgun.pelletsMin + (CONFIG.shotgun.pelletsMax - CONFIG.shotgun.pelletsMin) * chargePercent);
     const damage = CONFIG.shotgun.damageMin + (CONFIG.shotgun.damageMax - CONFIG.shotgun.damageMin) * chargePercent;
 
@@ -241,9 +265,10 @@ function fireShotgun() {
     // Screen shake scales with charge
     addScreenShake(5 + chargePercent * 15);
 
-    // Consume charge
+    // Consume charge and trigger regen delay
     if (!CONFIG.debug.infiniteCharge) {
         player.charge = 0;
+        player.chargeRegenTimer = CONFIG.charge.regenDelay;
     }
 
     // Particles
@@ -560,8 +585,8 @@ function fireEnemyBullet(enemy) {
         y: enemy.y,
         vx: Math.cos(angle + spread) * config.bulletSpeed,
         vy: Math.sin(angle + spread) * config.bulletSpeed,
-        width: 10,
-        height: 10,
+        width: 20,
+        height: 20,
         damage: config.bulletDamage,
         active: true
     });
@@ -581,8 +606,8 @@ function fireGunshipBurst(enemy) {
         y: enemy.y,
         vx: Math.cos(finalAngle) * config.bulletSpeed,
         vy: Math.sin(finalAngle) * config.bulletSpeed,
-        width: 8,
-        height: 8,
+        width: 16,
+        height: 16,
         damage: config.bulletDamage,
         active: true
     });
@@ -906,12 +931,30 @@ function updatePlayer(dt) {
         player.x += player.dashDirX * CONFIG.dash.speed * dt;
         player.y += player.dashDirY * CONFIG.dash.speed * dt;
 
-        // Trail particles while dashing
-        if (Math.random() < 0.5) {
+        // Trail particles while dashing - opposite direction of dash
+        // Spawn rate: higher charge = more particles
+        const spawnChance = 0.3 + player.dashCharge * 0.7;  // 0.3-1.0 based on charge
+        if (Math.random() < spawnChance) {
+            // Determine trail color based on charge used
+            let trailColor;
+            if (player.dashCharge >= 1.0) {
+                trailColor = '#ff4400';  // Red for full charge
+            } else if (player.dashCharge > 0.5) {
+                trailColor = '#ff8800';  // Orange for mid charge
+            } else {
+                trailColor = '#ffdd00';  // Yellow for low charge
+            }
+
+            // Trail goes opposite to dash direction
+            const trailSpeed = 150 + Math.random() * 100;
+            const spreadAmount = 30;  // Slight random spread
             spawnParticle(
                 player.x, player.y,
-                -100, (Math.random() - 0.5) * 50,
-                '#44aaff', 3, 0.1
+                -player.dashDirX * trailSpeed + (Math.random() - 0.5) * spreadAmount,
+                -player.dashDirY * trailSpeed + (Math.random() - 0.5) * spreadAmount,
+                trailColor,
+                3 + player.dashCharge * 3,  // Bigger particles with more charge
+                0.15 + player.dashCharge * 0.15  // Longer lifetime with more charge
             );
         }
 
@@ -966,13 +1009,20 @@ function updatePlayer(dt) {
     // Fire input
     firePressed = keys[' '] || keys['space'] || mouseDown;
 
+    // Update charge regen timer
+    if (player.chargeRegenTimer > 0) {
+        player.chargeRegenTimer -= dt;
+    }
+
     if (firePressed) {
         fireMachineGun(dt);
         fireHoldTime += dt;
     } else {
-        // Charge builds while not firing
+        // Charge builds while not firing (only after regen delay expires)
         if (!CONFIG.debug.infiniteCharge) {
-            player.charge = Math.min(CONFIG.charge.max, player.charge + CONFIG.charge.rate * dt);
+            if (player.chargeRegenTimer <= 0) {
+                player.charge = Math.min(CONFIG.charge.max, player.charge + CONFIG.charge.rate * dt);
+            }
         } else {
             player.charge = CONFIG.charge.max;
         }
@@ -1137,11 +1187,47 @@ function renderPlayer() {
         ctx.globalAlpha = 0.5;
     }
 
-    // Dash trail effect
+    // Dash trail effect - directional based on dash direction
     if (player.isDashing) {
-        ctx.fillStyle = '#44aaff';
-        ctx.globalAlpha = 0.3;
-        ctx.fillRect(px - 30, py - player.height / 2, 30, player.height);
+        // Determine trail color based on charge used
+        let trailColor;
+        if (player.dashCharge >= 1.0) {
+            trailColor = '#ff4400';  // Red for full charge
+        } else if (player.dashCharge > 0.5) {
+            trailColor = '#ff8800';  // Orange for mid charge
+        } else {
+            trailColor = '#ffdd00';  // Yellow for low charge
+        }
+
+        // Draw trail in opposite direction of dash
+        const trailLength = 30 + player.dashCharge * 30;  // 30-60 pixels based on charge
+        const trailWidth = player.height + player.dashCharge * 10;  // Wider with more charge
+
+        // Calculate trail rectangle position based on dash direction
+        const trailStartX = px - player.dashDirX * trailLength;
+        const trailStartY = py - player.dashDirY * trailLength;
+
+        // Draw gradient trail
+        ctx.globalAlpha = 0.4;
+        ctx.fillStyle = trailColor;
+
+        // Create gradient along dash direction
+        const gradient = ctx.createLinearGradient(
+            px, py,
+            trailStartX, trailStartY
+        );
+        gradient.addColorStop(0, trailColor);
+        gradient.addColorStop(1, trailColor + '00');  // Transparent at end
+
+        // Draw trail as a thick line
+        ctx.strokeStyle = gradient;
+        ctx.lineWidth = trailWidth;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(trailStartX, trailStartY);
+        ctx.stroke();
+
         ctx.globalAlpha = 1;
     }
 
@@ -1195,39 +1281,52 @@ function renderPlayer() {
         ctx.lineWidth = 1;
     }
 
-    // Charge meter (built into ship)
+    // Cannon square (center front square of the ship)
+    const cannonSize = 8;
+    const cannonX = px + player.width / 2 - cannonSize / 2;
+    const cannonY = py - cannonSize / 2;
+    ctx.fillStyle = '#666666';
+    ctx.fillRect(cannonX, cannonY, cannonSize, cannonSize);
+
+    // Charge circle (grows in front of cannon, only visible when charging)
     const chargePercent = player.charge / CONFIG.charge.max;
-    const meterMinWidth = 6;
-    const meterMaxWidth = player.width;
-    const meterWidth = meterMinWidth + (meterMaxWidth - meterMinWidth) * chargePercent;
-    const meterHeight = 6;
-    const meterX = px + player.width / 2 - meterWidth + 4;  // Anchored to front of ship
-    const meterY = py - meterHeight / 2;
+    if (chargePercent > 0) {
+        const minRadius = 2;
+        const maxRadius = 15;  // 30x30 diameter when full
+        const radius = minRadius + (maxRadius - minRadius) * chargePercent;
+        const circleX = px + player.width / 2 + radius + 6;  // In front of cannon
+        const circleY = py;
 
-    // Glow and blink effect when fully charged
-    if (chargePercent >= 1) {
-        const blink = Math.sin(performance.now() * 0.015) > 0;
-        if (blink) {
-            ctx.shadowColor = '#ff4400';
-            ctx.shadowBlur = 20;
+        // Glow and blink effect when fully charged
+        if (chargePercent >= 1) {
+            const blink = Math.sin(performance.now() * 0.015) > 0;
+            if (blink) {
+                ctx.shadowColor = '#ff2200';
+                ctx.shadowBlur = 25;
+            } else {
+                ctx.shadowColor = '#ff4400';
+                ctx.shadowBlur = 15;
+            }
         }
+
+        // Circle color gradient based on charge (yellow to red)
+        if (chargePercent >= 1) {
+            const blink = Math.sin(performance.now() * 0.015) > 0;
+            ctx.fillStyle = blink ? '#ff2200' : '#ff4400';  // Blinking red when full
+        } else if (chargePercent > 0.5) {
+            ctx.fillStyle = '#ff8800';  // Orange when high
+        } else {
+            ctx.fillStyle = '#ffdd00';  // Yellow when low
+        }
+
+        ctx.beginPath();
+        ctx.arc(circleX, circleY, radius, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Reset shadow
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
     }
-
-    // Meter color gradient based on charge (yellow to red)
-    if (chargePercent >= 1) {
-        const blink = Math.sin(performance.now() * 0.015) > 0;
-        ctx.fillStyle = blink ? '#ff2200' : '#ff4400';  // Blinking red when full
-    } else if (chargePercent > 0.5) {
-        ctx.fillStyle = '#ff8800';  // Orange when high
-    } else {
-        ctx.fillStyle = '#ffdd00';  // Yellow when low
-    }
-
-    ctx.fillRect(meterX, meterY, meterWidth, meterHeight);
-
-    // Reset shadow
-    ctx.shadowColor = 'transparent';
-    ctx.shadowBlur = 0;
 
     ctx.globalAlpha = 1;
 
@@ -1489,6 +1588,7 @@ function restartGame() {
     player.knockbackVx = 0;
     player.knockbackVy = 0;
     player.charge = 0;
+    player.chargeRegenTimer = 0;
     player.machineGunCooldown = 0;
     player.isDashing = false;
     player.dashTimer = 0;
